@@ -1735,7 +1735,7 @@ function renderShareCard(s) {
       <button class="${liked?'liked':''}" onclick="event.stopPropagation();toggleLike(${s.id});this.style.animation='likeBounce 0.4s ease';setTimeout(()=>this.style.animation='',400)">${liked?'&#10084;&#65039;':'&#129293;'} ${likes.length||''}</button>
       <button onclick="event.stopPropagation();openComments(${s.id})">&#128172; ${comments.length||''}</button>
       ${isAdmin ? `<button style="color:var(--sage)" onclick="event.stopPropagation();togglePin(${s.id}, ${!s.pinned})">${s.pinned?'&#128204; 取消置顶':'&#128204; 置顶'}</button>` : ""}
-      ${isAdmin ? `<button style="color:#D4A843" onclick="event.stopPropagation();toggleFeatured(${s.id}, ${!(s.featured||s.pinned)})">${(s.featured||s.pinned)?'&#11088; 取消精选':'&#11088; 设为精选'}</button>` : ""}
+      ${isAdmin ? `<button style="color:#D4A843" onclick="event.stopPropagation();toggleFeatured(${s.id}, ${!s.featured})">${s.featured?'&#11088; 取消精选':'&#11088; 设为精选'}</button>` : ""}
       ${isOwner ? `<button class="edit" onclick="event.stopPropagation();editPost(${s.id})">&#9999;&#65039; 编辑</button>` : ""}
       ${(isAdmin || isOwner) ? `<button style="color:var(--dusty-rose)" onclick="event.stopPropagation();deletePost(${s.id})">${isOwner ? '&#128465;&#65039; 删除' : '删除'}</button>` : ""}
     </div>
@@ -2489,10 +2489,10 @@ async function loadDiscover() {
     ).join("");
   }
 
-  // Load featured posts（兼容pinned字段）
+  // Load featured posts（只查featured=true，置顶≠精选）
   const { data: featured } = await db.from("shares")
     .select("id,author_name,author_dept,content,tag,image_url,created_at,likes(id),comments(id)")
-    .or("featured.eq.true,pinned.eq.true")
+    .eq("featured", true)
     .order("created_at", { ascending: false })
     .limit(10);
 
@@ -2975,13 +2975,6 @@ async function adminLogin() {
     renderTagCategoryAdmin();
     loadFeed();
   } else { toast("密码错误"); }
-}
-
-async function toggleFeatured(id, featured) {
-  await db.from("shares").update({ featured }).eq("id", id);
-  loadAllPosts();
-  if (document.getElementById("page-discover").classList.contains("active")) loadDiscover();
-  toast(featured ? "已设为精选" : "已取消精选");
 }
 
 async function loadAllPosts() {
