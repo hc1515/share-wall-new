@@ -625,6 +625,16 @@ body{
   <!-- 公告区 -->
   <div id="feedAnnounce"></div>
 
+  <!-- 搜索栏 -->
+  <div class="search-bar">
+    <input type="text" id="searchInput" placeholder="搜索发帖人或内容..." oninput="onSearch()">
+    <span class="clear-btn" id="clearSearch" onclick="clearSearch()" style="display:none">&#10005;</span>
+  </div>
+
+  <!-- 标签分类筛选 -->
+  <div class="tag-category-tabs" id="tagCategoryTabs"></div>
+  <div class="tags-row" id="tagFilters"></div>
+
   <!-- 全部帖子 -->
   <div class="section-title" style="margin-top:14px">&#128220; 全部帖子</div>
 
@@ -1503,14 +1513,32 @@ async function submitPost() {
     }
   }
 
-  await db.from("shares").insert({
+  const { data: inserted } = await db.from("shares").insert({
     author_name: userName, author_dept: userDept, content, tag: selectedPostTag,
     image_url: imageUrls.length > 0 ? JSON.stringify(imageUrls) : null,
     pinned: false
-  });
+  }).select().single();
   btn.disabled = false; btn.textContent = "发布";
   closePostModal();
-  loadFeed();
+
+  // DOM即时插入新帖子到feed顶部（丝滑，不刷新整个页面）
+  const feedList = document.getElementById("feedList");
+  if (inserted && feedList) {
+    // 移除可能的空状态
+    const emptyState = feedList.querySelector('.empty-state, .empty');
+    if (emptyState) emptyState.remove();
+    // 构建新卡片并插入顶部
+    const newCard = renderShareCard({ ...inserted, likes: [], comments: [] });
+    feedList.insertAdjacentHTML('afterbegin', newCard);
+    const card = feedList.firstElementChild;
+    if (card) {
+      card.style.animation = 'fadeInUp 0.5s ease';
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      highlightCard(card);
+    }
+    // 重置分页，后台静默刷新保证一致性
+    feedPage = 0; feedHasMore = true;
+  }
   toast("发布成功");
 }
 
@@ -1704,9 +1732,10 @@ function renderShareCard(s) {
     ${contentHtml}
     ${imagesHtml}
     <div class="actions">
-      <button class="${liked?'liked':''}" onclick="event.stopPropagation();toggleLike(${s.id})">${liked?'&#10084;&#65039;':'&#129293;'} ${likes.length||''}</button>
+      <button class="${liked?'liked':''}" onclick="event.stopPropagation();toggleLike(${s.id});this.style.animation='likeBounce 0.4s ease';setTimeout(()=>this.style.animation='',400)">${liked?'&#10084;&#65039;':'&#129293;'} ${likes.length||''}</button>
       <button onclick="event.stopPropagation();openComments(${s.id})">&#128172; ${comments.length||''}</button>
       ${isAdmin ? `<button style="color:var(--sage)" onclick="event.stopPropagation();togglePin(${s.id}, ${!s.pinned})">${s.pinned?'&#128204; 取消置顶':'&#128204; 置顶'}</button>` : ""}
+      ${isAdmin ? `<button style="color:#D4A843" onclick="event.stopPropagation();toggleFeatured(${s.id}, ${!(s.featured||s.pinned)})">${(s.featured||s.pinned)?'&#11088; 取消精选':'&#11088; 设为精选'}</button>` : ""}
       ${isOwner ? `<button class="edit" onclick="event.stopPropagation();editPost(${s.id})">&#9999;&#65039; 编辑</button>` : ""}
       ${(isAdmin || isOwner) ? `<button style="color:var(--dusty-rose)" onclick="event.stopPropagation();deletePost(${s.id})">${isOwner ? '&#128465;&#65039; 删除' : '删除'}</button>` : ""}
     </div>
@@ -1866,7 +1895,15 @@ async function saveEditPost() {
   if (!editingPostTag) return toast("请选择一个标签");
   await db.from("shares").update({ content, tag: editingPostTag }).eq("id", editingPostId);
   closeEditModal();
-  loadFeed();
+  // DOM即时更新卡片内容和标签
+  const card = document.getElementById(`card-${editingPostId}`);
+  if (card) {
+    const contentEl = card.querySelector('.content');
+    if (contentEl) contentEl.innerHTML = renderContentWithLinks(content);
+    const tagBadge = card.querySelector('.tag-badge');
+    if (tagBadge) tagBadge.textContent = editingPostTag;
+    card.style.animation = 'fadeInUp 0.3s ease';
+  }
   toast("编辑成功");
 }
 
@@ -2068,8 +2105,18 @@ async function submitDrawerComment() {
   document.getElementById("commentImgBtn").classList.remove("has-img");
   cancelReply();
   document.getElementById("commentImage").value = "";
+  // 刷新评论抽屉
   openComments(currentDrawerShareId);
-  loadFeed();
+  // DOM即时更新feed中该帖子的评论数
+  const card = document.getElementById(`card-${currentDrawerShareId}`);
+  if (card) {
+    const commentBtn = card.querySelector(".actions button:nth-child(2)");
+    if (commentBtn) {
+      const m = commentBtn.textContent.match(/(\d+)/);
+      const cur = m ? parseInt(m[1]) : 0;
+      commentBtn.innerHTML = `&#128172; ${cur + 1}`;
+    }
+  }
 }
 
 async function deleteComment(id) {
@@ -2085,24 +2132,45 @@ async function toggleLike(shareId) {
   if (!(await requireIdentity("like"))) return;
   const { data: existing } = await db.from("likes").select("id").eq("share_id",shareId).eq("author_name",userName).limit(1);
 
-  if (existing && existing.length > 0) {
-    await db.from("likes").delete().eq("id", existing[0].id);
-  } else {
-    await db.from("likes").insert({ share_id: shareId, author_name: userName });
-    // Add animation class to button
-    const btn = document.querySelector(`#card-${shareId} .actions button:first-child`);
-    if (btn) {
+  const card = document.getElementById(`card-${shareId}`);
+  const btn = card?.querySelector(".actions button:first-child");
+  const isLiking = !(existing && existing.length > 0);
+
+  // DOM即时更新（不等待服务器响应，最丝滑）
+  if (btn) {
+    const countMatch = btn.textContent.match(/(\d+)/);
+    let count = countMatch ? parseInt(countMatch[1]) : 0;
+    if (isLiking) {
+      count++;
+      btn.classList.add("liked");
+      btn.innerHTML = `&#10084;&#65039; ${count || ''}`;
       btn.style.animation = "likeBounce 0.4s ease";
       setTimeout(() => btn.style.animation = "", 400);
+      // 心跳扩散效果
+      if (card) {
+        card.style.transition = "transform 0.15s ease";
+        card.style.transform = "scale(1.005)";
+        setTimeout(() => card.style.transform = "", 150);
+      }
+    } else {
+      count = Math.max(0, count - 1);
+      btn.classList.remove("liked");
+      btn.innerHTML = `&#129293; ${count || ''}`;
     }
+  }
+
+  // 后台静默同步数据库
+  if (isLiking) {
+    await db.from("likes").insert({ share_id: shareId, author_name: userName });
     const { data: post } = await db.from("shares").select("author_name").eq("id", shareId).single();
     if (post && post.author_name !== userName) {
       await db.from("notices").insert({
         to_user: post.author_name, type: "like", message: `${userName} 赞了你的帖子`, share_id: shareId
       });
     }
+  } else {
+    await db.from("likes").delete().eq("id", existing[0].id);
   }
-  loadFeed();
 }
 
 async function deletePost(id) {
@@ -2111,18 +2179,50 @@ async function deletePost(id) {
   const isOwner = post.author_name === userName;
   if (!isAdmin && !isOwner) return toast("只能删除自己的帖子");
   if (!confirm(isOwner ? "确认删除你发的这条分享？" : "确认删除这条分享？")) return;
+  // DOM即时移除，最快速的视觉反馈
+  const card = document.getElementById(`card-${id}`);
+  if (card) { card.style.transition="all .35s cubic-bezier(.4,0,.2,1)"; card.style.transform="translateX(110%)"; card.style.opacity="0"; setTimeout(()=>{card.style.maxHeight="0";card.style.margin="0 16px";card.style.padding="0";card.style.overflow="hidden";setTimeout(()=>card.remove(),300)}, 350); }
   await db.from("likes").delete().eq("share_id", id);
   await db.from("comments").delete().eq("share_id", id);
   await db.from("shares").delete().eq("id", id);
-  loadFeed();
+  refreshAllPages();
   if (adminUnlocked) loadAllPosts();
   toast("已删除");
 }
 
 async function togglePin(id, pinned) {
   await db.from("shares").update({ pinned }).eq("id", id);
-  loadFeed();
+  // DOM即时更新置顶样式
+  const card = document.getElementById(`card-${id}`);
+  if (card) {
+    if (pinned) { card.classList.add("pinned"); card.style.animation="fadeInUp .4s ease"; }
+    else { card.classList.remove("pinned"); }
+  }
+  refreshAllPages();
   toast(pinned ? "已置顶" : "已取消置顶");
+}
+
+async function toggleFeatured(id, featured) {
+  if (!isAdmin) return toast("只有管理员可以操作");
+  await db.from("shares").update({ featured }).eq("id", id);
+  refreshAllPages();
+  if (adminUnlocked) loadAllPosts();
+  toast(featured ? "已设为精选" : "已取消精选");
+}
+
+// 统一刷新所有页面（无论当前在哪个页面）
+function refreshAllPages() {
+  // 强制刷新feed（重置分页）
+  feedPage = 0; feedHasMore = true;
+  loadFeed(true);
+  // 如果其他页面处于激活状态，也一并刷新
+  if (document.getElementById("page-dash").classList.contains("active")) loadDashboard();
+  if (document.getElementById("page-discover").classList.contains("active")) loadDiscover();
+  if (document.getElementById("page-tag").classList.contains("active")) {
+    const tagTitle = document.getElementById("tagPageTitle").textContent.replace(/^#/, "");
+    if (tagTitle && tagTitle !== "标签") openTagPage(tagTitle);
+  }
+  if (document.getElementById("page-my").classList.contains("active")) updateMyPage();
 }
 
 // ==================== 通知 ====================
@@ -2389,10 +2489,10 @@ async function loadDiscover() {
     ).join("");
   }
 
-  // Load featured posts
+  // Load featured posts（兼容pinned字段）
   const { data: featured } = await db.from("shares")
     .select("id,author_name,author_dept,content,tag,image_url,created_at,likes(id),comments(id)")
-    .eq("featured", true)
+    .or("featured.eq.true,pinned.eq.true")
     .order("created_at", { ascending: false })
     .limit(10);
 
@@ -2655,25 +2755,52 @@ async function renderMyTab() {
 }
 
 async function goToPost(id) {
-  switchTab('feed');
-  await new Promise(r => setTimeout(r, 300));
+  // 先切到首页tab（视觉反馈），但不阻塞
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.getElementById("page-feed").classList.add("active");
+  document.querySelectorAll(".tab-bar .tab-btn").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".tab-bar .tab-btn")[0].classList.add("active");
+  const fab = document.getElementById("fabPost");
+  if (fab) fab.classList.remove("hidden");
+
+  // 先检查目标帖子是否已在当前DOM中
   let el = document.getElementById(`card-${id}`);
   if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    el.style.background = 'rgba(141,158,175,0.1)';
-    setTimeout(() => el.style.background = '', 2000);
+    highlightCard(el);
     return;
   }
-  while (!el && feedHasMore) {
-    await loadFeed(false);
-    await new Promise(r => setTimeout(r, 200));
+
+  // 不在DOM中 -> 单独查询目标帖子并插入feed顶部
+  const { data: share } = await db.from("shares")
+    .select("id,author_name,author_dept,content,tag,image_url,created_at,pinned,featured,comments(id,author_name,content,image_url,created_at,parent_id,reply_to),likes(id,author_name)")
+    .eq("id", id).single();
+
+  if (share) {
+    // 插入feed顶部，确保它在DOM中
+    const feedList = document.getElementById("feedList");
+    const html = renderShareCard(share);
+    // 如果feedList以loading或空状态结尾，先清空
+    if (feedList.querySelector('.empty-state') || feedList.querySelector('.empty')) {
+      feedList.innerHTML = html;
+    } else {
+      feedList.insertAdjacentHTML('afterbegin', html);
+    }
+    // 高亮新插入的卡片
     el = document.getElementById(`card-${id}`);
+    if (el) highlightCard(el);
   }
-  if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    el.style.background = 'rgba(141,158,175,0.1)';
-    setTimeout(() => el.style.background = '', 2000);
-  }
+}
+
+function highlightCard(el) {
+  // 使用更明显的视觉反馈
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.style.transition = 'box-shadow 0.5s ease, transform 0.3s ease';
+  el.style.boxShadow = '0 0 0 3px var(--muted-blue), 0 8px 32px rgba(141,158,175,0.3)';
+  el.style.transform = 'scale(1.01)';
+  setTimeout(() => {
+    el.style.boxShadow = '';
+    el.style.transform = '';
+  }, 2500);
 }
 
 // ==================== 标题管理 ====================
@@ -2862,9 +2989,10 @@ async function loadAllPosts() {
   document.getElementById("adminPostList").innerHTML = (data||[]).map(s =>
     `<div style="padding:10px 0;border-bottom:0.5px solid rgba(74,69,67,0.06);display:flex;justify-content:space-between;align-items:center">
       <span style="font-size:13px"><b>${esc(s.author_name)}</b> · ${esc(s.tag)}${s.pinned?' 📌':''}${s.featured?' ⭐':''} · ${esc(s.content.slice(0,25))}...</span>
-      <div>
-        <button class="${s.featured ? 'danger' : 'success'} small" onclick="toggleFeatured(${s.id}, ${!s.featured})" style="margin-right:4px;padding:4px 12px;font-size:12px;border-radius:14px">${s.featured ? '取消精选' : '设为精选'}</button>
-        <button class="danger small" onclick="deletePost(${s.id})" style="padding:4px 12px;font-size:12px;border-radius:14px">删除</button>
+      <div style="display:flex;gap:4px;flex-shrink:0">
+        <button class="small" onclick="togglePin(${s.id}, ${!s.pinned})" style="padding:4px 10px;font-size:11px;border-radius:12px;background:var(--sage);color:#fff;border:none;cursor:pointer">${s.pinned?'📌取消置顶':'📌置顶'}</button>
+        <button class="small" onclick="toggleFeatured(${s.id}, ${!s.featured})" style="padding:4px 10px;font-size:11px;border-radius:12px;background:${s.featured?'var(--warm-gray)':'#D4A843'};color:#fff;border:none;cursor:pointer">${s.featured ? '⭐取消精选' : '⭐设为精选'}</button>
+        <button class="small" onclick="deletePost(${s.id})" style="padding:4px 10px;font-size:11px;border-radius:12px;background:var(--dusty-rose);color:#fff;border:none;cursor:pointer">删除</button>
       </div>
     </div>`
   ).join("") || '<div style="color:var(--text3);padding:10px 0">暂无分享</div>';
@@ -2979,15 +3107,30 @@ function toast(msg) {
 }
 
 // ==================== 实时更新 ====================
-db.channel("live")
-  .on("postgres_changes",{event:"*",schema:"public",table:"shares"},() => {
-    loadFeed(); loadNotices();
-    if (document.getElementById("page-dash").classList.contains("active")) loadDashboard();
-    if (document.getElementById("page-discover").classList.contains("active")) loadDiscover();
-  })
-  .on("postgres_changes",{event:"*",schema:"public",table:"comments"},() => { loadFeed(); loadNotices(); if (document.getElementById("page-discover").classList.contains("active")) loadDiscover(); })
-  .on("postgres_changes",{event:"*",schema:"public",table:"likes"},() => { loadFeed(); loadNotices(); if (document.getElementById("page-discover").classList.contains("active")) loadDiscover(); })
-  .subscribe();
+function setupRealtime() {
+  const channel = db.channel("live")
+    .on("postgres_changes",{event:"*",schema:"public",table:"shares"},(payload) => {
+      // shares表变化时刷新所有页面
+      feedPage = 0; feedHasMore = true;
+      loadFeed(true); loadNotices();
+      if (document.getElementById("page-dash").classList.contains("active")) loadDashboard();
+      if (document.getElementById("page-discover").classList.contains("active")) loadDiscover();
+      if (document.getElementById("page-tag").classList.contains("active")) {
+        const tagTitle = document.getElementById("tagPageTitle").textContent.replace(/^#/,"");
+        if (tagTitle && tagTitle !== "标签") openTagPage(tagTitle);
+      }
+    })
+    .on("postgres_changes",{event:"*",schema:"public",table:"comments"},() => { loadFeed(); loadNotices(); if (document.getElementById("page-discover").classList.contains("active")) loadDiscover(); })
+    .on("postgres_changes",{event:"*",schema:"public",table:"likes"},() => { loadFeed(); loadNotices(); if (document.getElementById("page-discover").classList.contains("active")) loadDiscover(); })
+    .subscribe((status) => {
+      if (status !== "SUBSCRIBED") {
+        console.warn("Realtime not subscribed, status:", status);
+        // 3秒后尝试重新连接
+        setTimeout(setupRealtime, 3000);
+      }
+    });
+}
+setupRealtime();
 </script>
 <!-- Image Lightbox -->
 <div class="lightbox" id="lightbox" onclick="closeLightbox()">
