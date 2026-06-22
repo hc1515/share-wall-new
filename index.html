@@ -2686,15 +2686,34 @@ function login() {
 }
 
 async function loadMyData() {
+  // 1. 我的帖子列表
   const { data: shares } = await db.from("shares").select("*").eq("author_name", userName).order("created_at", { ascending: false });
-  const { data: likes } = await db.from("likes").select("share_id").eq("author_name", userName);
-  const { data: comments } = await db.from("comments").select("*").eq("author_name", userName).order("created_at", { ascending: false });
+  // 2. 我点的赞（用于"我的点赞"tab）
+  const { data: myLikes } = await db.from("likes").select("share_id").eq("author_name", userName);
+  // 3. 我发的评论（用于"我的评论"tab）
+  const { data: myComments } = await db.from("comments").select("*").eq("author_name", userName).order("created_at", { ascending: false });
+
+  // 统计：获赞 = 我发的帖子获得的所有点赞总数
+  let receivedLikesCount = 0;
+  if (shares && shares.length > 0) {
+    const myShareIds = shares.map(s => s.id);
+    const { data: allLikes } = await db.from("likes").select("share_id").in("share_id", myShareIds);
+    receivedLikesCount = allLikes?.length || 0;
+  }
+
+  // 统计：评论 = 我发的帖子获得的所有一级评论（parent_id为null）总数
+  let receivedCommentsCount = 0;
+  if (shares && shares.length > 0) {
+    const myShareIds = shares.map(s => s.id);
+    const { data: allComments } = await db.from("comments").select("id").in("share_id", myShareIds).is("parent_id", null);
+    receivedCommentsCount = allComments?.length || 0;
+  }
 
   document.getElementById("myPostCount").textContent = shares?.length || 0;
-  document.getElementById("myLikeCount").textContent = likes?.length || 0;
-  document.getElementById("myCommentCount").textContent = comments?.length || 0;
+  document.getElementById("myLikeCount").textContent = receivedLikesCount;
+  document.getElementById("myCommentCount").textContent = receivedCommentsCount;
 
-  window.myData = { shares: shares || [], likes: likes || [], comments: comments || [] };
+  window.myData = { shares: shares || [], likes: myLikes || [], comments: myComments || [] };
   renderMyTab();
 }
 
@@ -2717,13 +2736,22 @@ async function renderMyTab() {
       container.innerHTML = '<div class="empty">你还没有发过帖子</div>';
       return;
     }
-    container.innerHTML = shares.map(s => `
+    container.innerHTML = shares.map(s => {
+      // 正确解析image_url（可能是JSON数组或单URL）
+      let imageUrls = [];
+      if (s.image_url) {
+        try { const parsed = JSON.parse(s.image_url); imageUrls = Array.isArray(parsed) ? parsed : [s.image_url]; }
+        catch(e) { imageUrls = [s.image_url]; }
+      }
+      const gridClass = imageUrls.length === 1 ? 'single' : imageUrls.length === 2 ? 'double' : imageUrls.length === 3 ? 'triple' : imageUrls.length >= 4 ? 'quad' : '';
+      const imgsHtml = imageUrls.length > 0 ? `<div class="card-imgs ${gridClass}">${imageUrls.map(url => `<img src="${url}" alt="图片" loading="lazy">`).join('')}</div>` : '';
+      return `
       <div class="card" onclick="goToPost(${s.id})" style="cursor:pointer">
         <div class="card-top"><span class="tag-badge">${esc(s.tag)}</span><span class="time">${formatTime(s.created_at)}</span></div>
         <div class="content">${renderContentWithLinks(s.content)}</div>
-        ${s.image_url ? `<div class="card-img"><img src="${s.image_url}" alt="图片" loading="lazy"></div>` : ""}
-      </div>
-    `).join("");
+        ${imgsHtml}
+      </div>`;
+    }).join("");
   } else if (myCurrentTab === "likes") {
     const likeIds = window.myData.likes.map(l => l.share_id);
     if (likeIds.length === 0) {
