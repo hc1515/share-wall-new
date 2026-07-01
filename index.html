@@ -123,13 +123,15 @@ body{
 .card .content{font-size:15px;line-height:1.6;word-break:break-word;white-space:pre-wrap;margin-bottom:10px;color:var(--text)}
 .card .content.collapsed{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .content-expand{color:var(--muted-blue);font-size:13px;cursor:pointer;margin-top:4px;display:inline-block}
-.card-imgs{margin-bottom:10px;display:grid;gap:4px;border-radius:var(--radius-sm);overflow:hidden}
-.card-imgs.single{grid-template-columns:1fr;max-width:280px}
-.card-imgs.double{grid-template-columns:repeat(2,1fr)}
-.card-imgs.triple{grid-template-columns:repeat(3,1fr)}
-.card-imgs.quad{grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr)}
-.card-imgs img{width:100%;height:100%;object-fit:cover;aspect-ratio:1}
-.card-imgs.single img{aspect-ratio:4/3}
+.card-imgs{margin-bottom:10px;display:flex;flex-wrap:wrap;gap:4px;border-radius:var(--radius-sm);overflow:hidden}
+/* 单张图：自然尺寸，最大宽度320px */
+.card-imgs.single img{max-width:320px;width:100%;height:auto;cursor:pointer;transition:opacity .15s;border-radius:var(--radius-sm)}
+/* 多张图：网格展示，保持原始比例 */
+.card-imgs.double{grid-template-columns:repeat(2,1fr);display:grid}
+.card-imgs.triple{grid-template-columns:repeat(3,1fr);display:grid}
+.card-imgs.quad{grid-template-columns:repeat(2,1fr);grid-template-rows:repeat(2,1fr);display:grid}
+.card-imgs.double img,.card-imgs.triple img,.card-imgs.quad img{width:100%;height:auto;object-fit:cover;cursor:pointer;transition:opacity .15s;border-radius:var(--radius-sm)}
+.card-imgs img:hover{opacity:.88}
 .card .actions{display:flex;gap:16px;padding-top:12px;border-top:0.5px solid rgba(74,69,67,0.06);flex-wrap:wrap}
 .card .actions button{
   background:none;border:none;font-size:13px;color:var(--text2);cursor:pointer;
@@ -172,6 +174,7 @@ body{
 .comment .del-btn{float:right;font-size:11px;color:var(--dusty-rose);cursor:pointer;padding:2px 6px}
 .comment-reply-btn{font-size:11px;color:var(--muted-blue);cursor:pointer;margin-left:8px;font-weight:500}
 .comment-reply-btn:hover{text-decoration:underline}
+.comment .actions button.liked,.comment button.liked{color:var(--dusty-rose)}
 .comment-reply-to{font-size:11px;color:var(--dusty-rose);margin-bottom:3px;display:inline-block;background:rgba(196,164,164,0.08);padding:2px 8px;border-radius:8px}
 .comment-nested{margin-left:16px;padding-left:10px;border-left:2px solid rgba(141,158,175,0.2);margin-top:6px;padding-top:6px;border-top:0.5px solid rgba(74,69,67,0.04)}
 .comment-nested .comment{padding:6px 0;border:none}
@@ -677,6 +680,12 @@ body{
     <div class="section-title" id="leaderboardTitle">&#127942; 活跃成员 TOP 10</div>
     <div class="leaderboard" id="leaderboard"></div>
   </div>
+
+  <!-- 积分排行榜 -->
+  <div id="pointsLeaderboardWrap">
+    <div class="section-title">&#127941; 积分排行榜</div>
+    <div class="leaderboard" id="pointsLeaderboard"></div>
+  </div>
 </div>
 
 <!-- ===== 发现页 ===== -->
@@ -844,6 +853,18 @@ body{
       <button class="export-btn" onclick="exportCSV()">导出全部分享为 CSV</button>
       <button class="export-btn" onclick="exportCommentsCSV()" style="background:var(--muted-blue);margin-top:8px">导出全部评论为 CSV</button>
       <div id="adminPostList" style="margin-top:10px;font-size:13px"></div>
+    </div>
+
+    <div class="admin-section">
+      <h3>积分管理</h3>
+      <div class="hint">给成员添加互动积分，可手动奖励或认可</div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <input type="text" id="pointMemberName" placeholder="成员姓名" style="flex:1;min-width:100px;margin-bottom:0">
+        <input type="number" id="pointValue" placeholder="积分" style="width:80px;margin-bottom:0">
+        <input type="text" id="pointNote" placeholder="备注（如：优质评论）" style="flex:1;min-width:120px;margin-bottom:0">
+      </div>
+      <button onclick="addPoint()">添加/更新积分</button>
+      <div id="pointsList" style="margin-top:12px;font-size:13px"></div>
     </div>
 
     <div class="admin-section">
@@ -1030,6 +1051,24 @@ async function init() {
   setInterval(loadNotices, 30000);
 }
 init();
+
+// 图片点击放大 - 全局事件委托
+document.addEventListener('click', (e) => {
+  const img = e.target.closest('.card-imgs img');
+  if (!img) return;
+  const container = img.closest('.card-imgs');
+  if (!container) return;
+  try {
+    const images = JSON.parse(container.dataset.images || '[]');
+    const idx = parseInt(img.dataset.idx || '0');
+    if (images.length > 0) {
+      e.stopPropagation();
+      openLightbox(images, idx);
+    }
+  } catch(err) {
+    console.error('Lightbox open failed:', err);
+  }
+});
 
 // 滚动加载更多
 window.addEventListener('scroll', () => {
@@ -1722,8 +1761,8 @@ function renderShareCard(s) {
   let imagesHtml = '';
   if (imageUrls.length > 0) {
     const gridClass = imageUrls.length === 1 ? 'single' : imageUrls.length === 2 ? 'double' : imageUrls.length === 3 ? 'triple' : 'quad';
-    const imgArr = imageUrls.map(u=> `"${u}"`).join(',');
-    imagesHtml = `<div class="card-imgs ${gridClass}">${imageUrls.map((url, idx) => `<img src="${url}" alt="图片" loading="lazy" onclick="event.stopPropagation();openLightbox([${imgArr}], ${idx})">`).join('')}</div>`;
+    const imgData = JSON.stringify(imageUrls).replace(/"/g, '&quot;');
+    imagesHtml = `<div class="card-imgs ${gridClass}" data-images="${imgData}">${imageUrls.map((url, idx) => `<img src="${url}" alt="图片" loading="lazy" data-idx="${idx}">`).join('')}</div>`;
   }
 
   return `<div class="card ${s.pinned?'pinned':''}" id="card-${s.id}">
@@ -1914,6 +1953,20 @@ async function renderComments(shareId) {
     .eq("id", shareId).single();
 
   const allComments = data?.comments || [];
+
+  // 批量查询所有评论的点赞数据
+  let commentLikesMap = {};
+  if (allComments.length > 0) {
+    const commentIds = allComments.map(c => c.id);
+    const { data: likesData } = await db.from("comment_likes").select("comment_id,author_name").in("comment_id", commentIds);
+    if (likesData) {
+      likesData.forEach(l => {
+        if (!commentLikesMap[l.comment_id]) commentLikesMap[l.comment_id] = [];
+        commentLikesMap[l.comment_id].push(l.author_name);
+      });
+    }
+  }
+
   const topComments = allComments.filter(c => !c.parent_id);
   const replies = allComments.filter(c => c.parent_id);
 
@@ -1923,7 +1976,7 @@ async function renderComments(shareId) {
     document.getElementById("drawerList").innerHTML = '<div style="text-align:center;color:var(--text3);padding:20px">暂无评论，来说两句吧</div>';
   } else {
     document.getElementById("drawerList").innerHTML = topComments.map(c =>
-      renderCommentItem(c, replies)
+      renderCommentItem(c, replies, false, commentLikesMap)
     ).join("");
   }
 }
@@ -1967,17 +2020,22 @@ async function openComments(shareId) {
   setTimeout(() => document.getElementById("drawerInput").focus(), 400);
 }
 
-function renderCommentItem(comment, allReplies, isNested = false) {
+function renderCommentItem(comment, allReplies, isNested = false, commentLikesMap = {}) {
   const isCommentOwner = comment.author_name === userName;
   const nestedClass = isNested ? 'comment-nested' : '';
   const replies = allReplies.filter(r => r.parent_id === comment.id);
   const hasReplies = replies.length > 0;
 
+  // 评论点赞数据
+  const likesList = commentLikesMap[comment.id] || [];
+  const likeCount = likesList.length;
+  const isLiked = likesList.includes(userName);
+
   // 渲染回复（更紧凑）
   let repliesHtml = '';
   if (hasReplies) {
     repliesHtml = `<div class="comment-replies collapsed" id="replies-${comment.id}">
-      ${replies.map(r => renderCommentItem(r, allReplies, true)).join('')}
+      ${replies.map(r => renderCommentItem(r, allReplies, true, commentLikesMap)).join('')}
     </div>
     <div class="comment-replies-summary" onclick="toggleReplies(${comment.id})">
       ${replies.length} 条回复 &#9662;
@@ -1996,7 +2054,10 @@ function renderCommentItem(comment, allReplies, isNested = false) {
       </div>
       ${comment.reply_to ? `<div class="comment-reply-to">回复 ${esc(comment.reply_to)}</div>` : ''}
       <div class="cmain">${renderContentWithLinks(comment.content)}</div>
-      ${comment.image_url ? `<div class="comment-img"><img src="${comment.image_url}" alt="评论图片" loading="lazy"></div>` : ""}
+      ${comment.image_url ? `<div class="comment-img"><img src="${comment.image_url}" alt="评论图片" loading="lazy" onclick="event.stopPropagation();openLightbox(['${comment.image_url}'], 0)" style="cursor:pointer"></div>` : ""}
+      <div style="margin-top:6px">
+        <button class="comment-like-btn ${isLiked?'liked':''}" data-count="${likeCount}" data-liked-users="${esc(likesList.join(','))}" onclick="event.stopPropagation();toggleCommentLike(${comment.id})" style="background:none;border:none;font-size:12px;color:var(--text3);cursor:pointer;display:flex;align-items:center;gap:3px;padding:2px 0">${isLiked?'&#10084;&#65039;':'&#129293;'} ${likeCount||''}</button>
+      </div>
       ${repliesHtml}
     </div>
   `;
@@ -2170,6 +2231,54 @@ async function toggleLike(shareId) {
     }
   } else {
     await db.from("likes").delete().eq("id", existing[0].id);
+  }
+}
+
+async function toggleCommentLike(commentId) {
+  if (!userName) return;
+  const btn = document.querySelector(`#comment-${commentId} .comment-like-btn`);
+  if (!btn) return;
+
+  // 用DOM的liked class判断当前状态（最可靠，不依赖网络查询）
+  const isLiking = !btn.classList.contains("liked");
+
+  // DOM即时更新
+  let count = parseInt(btn.dataset.count || '0');
+  const likedUsers = (btn.dataset.likedUsers || '').split(',').filter(Boolean);
+  const userIdx = likedUsers.indexOf(userName);
+
+  if (isLiking) {
+    if (userIdx === -1) likedUsers.push(userName);
+    count = likedUsers.length;
+    btn.innerHTML = `&#10084;&#65039; ${count}`;
+    btn.classList.add("liked");
+    btn.style.animation = "likeBounce 0.4s ease";
+    setTimeout(() => btn.style.animation = "", 400);
+  } else {
+    if (userIdx !== -1) likedUsers.splice(userIdx, 1);
+    count = likedUsers.length;
+    btn.innerHTML = `&#129293; ${count > 0 ? count : ''}`;
+    btn.classList.remove("liked");
+  }
+  btn.dataset.count = count;
+  btn.dataset.likedUsers = likedUsers.join(',');
+
+  // 后台同步
+  try {
+    if (isLiking) {
+      const { error } = await db.from("comment_likes").insert({ comment_id: commentId, author_name: userName });
+      if (error) { console.error("点赞失败:", error); toast("点赞失败:" + error.message); }
+    } else {
+      // 取消：先查id再删
+      const { data } = await db.from("comment_likes").select("id").eq("comment_id", commentId).eq("author_name", userName).limit(1);
+      if (data && data.length > 0) {
+        const { error } = await db.from("comment_likes").delete().eq("id", data[0].id);
+        if (error) { console.error("取消点赞失败:", error); toast("取消失败:" + error.message); }
+      }
+    }
+  } catch (e) {
+    console.error("toggleCommentLike异常:", e);
+    toast("操作失败，请检查网络");
   }
 }
 
@@ -2382,6 +2491,89 @@ async function loadDashboard() {
   } else {
     document.getElementById("dashLeaderboardWrap").style.display = "none";
   }
+
+  // 积分排行榜
+  await loadPointsLeaderboard();
+}
+
+async function loadPointsLeaderboard() {
+  const { data } = await db.from("points").select("*").order("points", { ascending: false });
+  const el = document.getElementById("pointsLeaderboard");
+  if (!data || data.length === 0) {
+    el.innerHTML = '<div class="empty">暂无积分数据</div>';
+    return;
+  }
+  el.innerHTML = data.map((p, i) => {
+    let cls = "normal";
+    if (i === 0) cls = "top1";
+    else if (i === 1) cls = "top2";
+    else if (i === 2) cls = "top3";
+    return `<div class="lb-item">
+      <div class="lb-rank ${cls}">${i + 1}</div>
+      <div class="lb-info">
+        <div class="lb-name">${esc(p.member_name)}</div>
+        <div class="lb-dept">${esc(p.note || '')}</div>
+      </div>
+      <div class="lb-stats"><span>&#127941; ${p.points} 分</span></div>
+    </div>`;
+  }).join("");
+}
+
+// ==================== 积分管理（后台）====================
+async function loadPoints() {
+  const { data } = await db.from("points").select("*").order("updated_at", { ascending: false });
+  const el = document.getElementById("pointsList");
+  if (!data || data.length === 0) {
+    el.innerHTML = '<div style="color:var(--text3)">暂无积分记录</div>';
+    return;
+  }
+  el.innerHTML = data.map(p => `
+    <div style="padding:8px 0;border-bottom:0.5px solid rgba(74,69,67,0.06);display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:13px"><b>${esc(p.member_name)}</b> · <span style="color:var(--muted-blue);font-weight:600">${p.points} 分</span>${p.note ? ' · ' + esc(p.note) : ''}</span>
+      <button class="danger small" onclick="deletePoint(${p.id})" style="padding:3px 10px;font-size:11px;border-radius:12px">删除</button>
+    </div>
+  `).join("");
+}
+
+async function addPoint() {
+  const name = document.getElementById("pointMemberName").value.trim();
+  const val = parseInt(document.getElementById("pointValue").value);
+  const note = document.getElementById("pointNote").value.trim();
+  if (!name) return toast("请输入成员姓名");
+  if (isNaN(val)) return toast("请输入积分");
+
+  try {
+    // 如果该成员已有记录则累加积分，否则新增
+    const { data: existing, error: findErr } = await db.from("points").select("id,points,note").eq("member_name", name).limit(1);
+    if (findErr) { console.error("查询积分失败:", findErr); toast("查询失败，请检查网络"); return; }
+
+    if (existing && existing.length > 0) {
+      const newPoints = (existing[0].points || 0) + val;
+      const { error: updErr } = await db.from("points").update({ points: newPoints, note: note || existing[0].note || '' }).eq("id", existing[0].id);
+      if (updErr) { console.error("更新积分失败:", updErr); toast("更新失败: " + updErr.message); return; }
+      toast(`${name} 积分已更新为 ${newPoints} 分`);
+    } else {
+      const { error: insErr } = await db.from("points").insert({ member_name: name, points: val, note: note || '' });
+      if (insErr) { console.error("添加积分失败:", insErr); toast("添加失败: " + insErr.message); return; }
+      toast(`${name} 已添加 ${val} 分`);
+    }
+
+    document.getElementById("pointMemberName").value = "";
+    document.getElementById("pointValue").value = "";
+    document.getElementById("pointNote").value = "";
+    await loadPoints();
+    await loadPointsLeaderboard();
+  } catch (e) {
+    console.error("addPoint异常:", e);
+    toast("操作异常: " + e.message);
+  }
+}
+
+async function deletePoint(id) {
+  if (!confirm("确认删除这条积分记录？")) return;
+  await db.from("points").delete().eq("id", id);
+  loadPoints();
+  loadPointsLeaderboard();
 }
 
 function renderChart(containerId, data, max) {
@@ -2744,11 +2936,13 @@ async function renderMyTab() {
         catch(e) { imageUrls = [s.image_url]; }
       }
       const gridClass = imageUrls.length === 1 ? 'single' : imageUrls.length === 2 ? 'double' : imageUrls.length === 3 ? 'triple' : imageUrls.length >= 4 ? 'quad' : '';
-      const imgsHtml = imageUrls.length > 0 ? `<div class="card-imgs ${gridClass}">${imageUrls.map(url => `<img src="${url}" alt="图片" loading="lazy">`).join('')}</div>` : '';
+      const imgData = JSON.stringify(imageUrls).replace(/"/g, '&quot;');
+      const imgsHtml = imageUrls.length > 0 ? `<div class="card-imgs ${gridClass}" data-images="${imgData}">${imageUrls.map((url, idx) => `<img src="${url}" alt="图片" loading="lazy" data-idx="${idx}">`).join('')}</div>` : '';
+      // 文字区域点击跳转帖子，图片区域独立点击放大
       return `
-      <div class="card" onclick="goToPost(${s.id})" style="cursor:pointer">
-        <div class="card-top"><span class="tag-badge">${esc(s.tag)}</span><span class="time">${formatTime(s.created_at)}</span></div>
-        <div class="content">${renderContentWithLinks(s.content)}</div>
+      <div class="card" id="my-card-${s.id}">
+        <div class="card-top" onclick="goToPost(${s.id})" style="cursor:pointer"><span class="tag-badge">${esc(s.tag)}</span><span class="time">${formatTime(s.created_at)}</span></div>
+        <div class="content" onclick="goToPost(${s.id})" style="cursor:pointer">${renderContentWithLinks(s.content)}</div>
         ${imgsHtml}
       </div>`;
     }).join("");
@@ -3000,7 +3194,7 @@ async function adminLogin() {
     document.getElementById("adminPanel").style.display = "block";
     await loadSettings();
     loadMembers(); loadAllPosts(); loadAnnounce(); loadSiteTitle(); loadPlaceholders();
-    renderTagCategoryAdmin();
+    renderTagCategoryAdmin(); loadPoints();
     loadFeed();
   } else { toast("密码错误"); }
 }
