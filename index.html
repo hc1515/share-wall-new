@@ -925,7 +925,8 @@ body{
       <button onclick="addPoint(false)">加分</button>
       <button class="danger" onclick="addPoint(true)">减分</button>
       <button onclick="exportPointLogs()" style="background:var(--warm-gray)">导出积分明细</button>
-      <button onclick="backfillPoints()" style="background:var(--sage)">补回历史积分</button>
+      <button onclick="recalculatePoints()" style="background:var(--sage)">重新计算积分</button>
+      <button onclick="clearAllPoints()" class="danger small">清空所有积分</button>
       <div id="pointsList" style="margin-top:12px;font-size:13px"></div>
     </div>
 
@@ -3074,8 +3075,102 @@ async function addPoint(isDeduction = false) {
 }
 
 // ==================== 历史数据补积分 ====================
+// ==================== 清空所有积分 ====================
+async function clearAllPoints() {
+  if (!confirm("⚠️ 确定要清空所有积分数据吗？\n\n这将删除：\n- 所有人的积分\n- 所有积分明细日志\n- 补积分标记\n\n此操作不可恢复！")) return;
+  if (!confirm("再次确认：真的要全部清空？")) return;
+
+  await db.from("points").delete().neq("id", 0);
+  await db.from("point_logs").delete().neq("id", 0);
+  await db.from("settings").delete().eq("key", "points_backfilled");
+
+  await loadPoints();
+  await loadPointsLeaderboard();
+  toast("所有积分已清空");
+}
+
+// ==================== 重新计算积分（遍历历史数据，去重计算） ====================
+async function recalculatePoints() {
+  if (!confirm("将按以下规则重新计算所有人积分：\n\n- 发帖 +3\n- 点赞别人 +1，被赞 +1（自赞不计）\n- 评论别人 +1，被评 +1（自评不计）\n\n之前的积分数据会被覆盖。确认？")) return;
+
+  toast("正在重新计算积分，请稍候...");
+
+  try {
+    // 1. 先清空现有积分
+    await db.from("points").delete().neq("id", 0);
+
+    // 2. 用 Map 累计每个人的正确积分
+    const scores = {}; // { name: points }
+
+    // 3. 遍历所有帖子：发帖 +3
+    const { data: shares } = await db.from("shares").select("id,author_name");
+    if (shares) {
+      shares.forEach(s => {
+        if (!scores[s.author_name]) scores[s.author_name] = 0;
+        scores[s.author_name] += 3;
+      });
+    }
+
+    // 4. 遍历所有点赞：点赞者+1，被赞者+1（跳过自赞）
+    const { data: likes } = await db.from("likes").select("share_id,author_name");
+    if (likes) {
+      const { data: allShares } = await db.from("shares").select("id,author_name");
+      const shareMap = {};
+      allShares?.forEach(s => shareMap[s.id] = s.author_name);
+
+      likes.forEach(l => {
+        const postAuthor = shareMap[l.share_id];
+        if (!postAuthor || l.author_name === postAuthor) return; // 跳过自赞
+        if (!scores[l.author_name]) scores[l.author_name] = 0;
+        scores[l.author_name] += 1; // 点赞者 +1
+        if (!scores[postAuthor]) scores[postAuthor] = 0;
+        scores[postAuthor] += 1; // 被赞者 +1
+      });
+    }
+
+    // 5. 遍历所有评论：评论者+1，被评者+1（跳过自评）
+    const { data: comments } = await db.from("comments").select("share_id,author_name");
+    if (comments) {
+      const { data: allShares } = await db.from("shares").select("id,author_name");
+      const shareMap = {};
+      allShares?.forEach(s => shareMap[s.id] = s.author_name);
+
+      comments.forEach(c => {
+        const postAuthor = shareMap[c.share_id];
+        if (!postAuthor || c.author_name === postAuthor) return; // 跳过自评
+        if (!scores[c.author_name]) scores[c.author_name] = 0;
+        scores[c.author_name] += 1; // 评论者 +1
+        if (!scores[postAuthor]) scores[postAuthor] = 0;
+        scores[postAuthor] += 1; // 被评者 +1
+      });
+    }
+
+    // 6. 批量写入新的积分
+    const entries = Object.entries(scores).filter(([, pts]) => pts > 0);
+    for (const [name, pts] of entries) {
+      await db.from("points").insert({ member_name: name, points: pts });
+    }
+
+    // 7. 标记为已补过
+    await db.from("settings").upsert({ key: "points_backfilled", value: "true" });
+
+    toast(`重新计算完成，共 ${entries.length} 人获得积分`);
+    await loadPoints();
+    await loadPointsLeaderboard();
+  } catch (e) {
+    console.error("重新计算异常:", e);
+    toast("重新计算异常: " + e.message);
+  }
+}
+
 async function backfillPoints() {
-  if (!confirm("这将遍历所有历史点赞和评论记录，为相关人员补积分。\n\n规则：\n- 发帖：作者 +3\n- 点赞：点赞者 +1，帖子作者 +1（自赞不加分）\n- 评论：评论者 +1，帖子作者 +1（自评不加分）\n\n确认执行？")) return;
+  // 检查是否已经补过
+  const { data: marker } = await db.from("settings").select("value").eq("key","points_backfilled").limit(1);
+  if (marker && marker[0]?.value === "true") {
+    return toast("历史积分已补回，无需重复操作");
+  }
+
+  if (!confirm("这将遍历所有历史点赞和评论记录，为相关人员补积分。\n\n规则：\n- 发帖：作者 +3\n- 点赞：点赞者 +1，帖子作者 +1（自赞不加分）\n- 评论：评论者 +1，帖子作者 +1（自评不加分）\n\n⚠️ 只能执行一次，确认执行？")) return;
 
   toast("正在补积分，请稍候...");
   let count = 0;
@@ -3101,13 +3196,10 @@ async function backfillPoints() {
         const postAuthor = shareMap[l.share_id];
         if (!postAuthor) continue;
         if (l.author_name !== postAuthor) {
-          // 点赞者+1
           await addUserPoints(l.author_name, 1, '历史点赞补积分');
-          // 被赞者+1
           await addUserPoints(postAuthor, 1, '历史被赞补积分');
           count++;
         }
-        // 自赞不加分
       }
     }
 
@@ -3122,16 +3214,15 @@ async function backfillPoints() {
         const postAuthor = shareMap[c.share_id];
         if (!postAuthor) continue;
         if (c.author_name !== postAuthor) {
-          // 评论者+1
           await addUserPoints(c.author_name, 1, '历史评论补积分');
-          // 被评论者+1
           await addUserPoints(postAuthor, 1, '历史被评补积分');
           count++;
         }
-        // 自评不加分
       }
     }
 
+    // 标记为已补过，防止重复执行
+    await db.from("settings").upsert({ key: "points_backfilled", value: "true" });
     toast(`补积分完成，共处理 ${count} 条记录`);
     await loadPoints();
     await loadPointsLeaderboard();
