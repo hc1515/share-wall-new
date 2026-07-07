@@ -612,6 +612,40 @@ body{
 .empty-state .empty-icon{font-size:48px;margin-bottom:12px;opacity:.5}
 .empty-state .empty-text{font-size:14px;margin-bottom:16px}
 .empty-action{padding:10px 24px;background:var(--muted-blue);color:#fff;border:none;border-radius:20px;font-size:14px;cursor:pointer}
+
+/* ===== 头衔展示 ===== */
+.rank-badge{display:inline-flex;align-items:center;gap:4px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;margin-top:8px;background:rgba(163,177,138,0.15);color:#7D8F6A}
+.rank-badge.l1{background:rgba(212,184,150,0.2);color:#A08050}
+.rank-badge.l2{background:rgba(163,177,138,0.15);color:#7D8F6A}
+.rank-badge.l3{background:rgba(141,158,175,0.15);color:#5E7A94}
+.rank-badge.l4{background:rgba(196,164,164,0.15);color:#9E7A7A}
+.rank-badge.l5{background:linear-gradient(135deg,rgba(212,184,150,0.3),rgba(196,164,164,0.3));color:#8A6A4A}
+
+/* ===== 积分飘字动画 ===== */
+@keyframes floatUp{0%{opacity:1;transform:translateY(0) scale(1)}50%{opacity:1;transform:translateY(-20px) scale(1.2)}100%{opacity:0;transform:translateY(-50px) scale(0.8)}}
+.point-float{position:fixed;z-index:400;font-size:18px;font-weight:700;color:var(--sage);pointer-events:none;animation:floatUp 1.2s ease-out forwards}
+
+/* ===== 活动倒计时横幅 ===== */
+.countdown-banner{background:linear-gradient(135deg,var(--muted-blue),var(--sage));margin:10px 16px;border-radius:var(--radius);padding:16px 18px;color:#fff;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.countdown-banner::before{content:'';position:absolute;top:-30px;right:-30px;width:100px;height:100px;background:rgba(255,255,255,0.06);border-radius:50%}
+.countdown-label{font-size:11px;font-weight:600;letter-spacing:1px;opacity:.85;margin-bottom:6px}
+.countdown-title{font-size:16px;font-weight:700;margin-bottom:10px}
+.countdown-time{display:flex;gap:8px;justify-content:center}
+.countdown-unit{background:rgba(0,0,0,0.18);padding:8px 0;border-radius:10px;text-align:center;min-width:52px;position:relative;overflow:hidden}
+.countdown-unit .cd-num{font-size:26px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;transition:transform .15s ease}
+.countdown-unit .cd-label{font-size:10px;opacity:.7;margin-top:4px;font-weight:500}
+.countdown-sep{font-size:22px;font-weight:700;opacity:.5;align-self:center;margin-top:-10px}
+/* 数字翻页动画 */
+@keyframes flipNum{0%{transform:translateY(-100%);opacity:0}50%{transform:translateY(5%);opacity:1}100%{transform:translateY(0);opacity:1}}
+.cd-flip{animation:flipNum .3s ease-out}
+
+/* ===== 发帖话题模板 ===== */
+.topic-templates{margin-top:14px}
+.topic-label{font-size:13px;font-weight:600;color:var(--text);margin-bottom:8px}
+.topic-list{display:flex;flex-wrap:wrap;gap:8px}
+.topic-chip{padding:8px 14px;border-radius:20px;border:0.5px solid rgba(74,69,67,0.12);background:var(--card);font-size:13px;color:var(--text2);cursor:pointer;transition:all .2s;font-weight:500}
+.topic-chip:hover{background:var(--muted-blue);color:#fff;border-color:var(--muted-blue)}
+.topic-chip.selected{background:var(--muted-blue);color:#fff;border-color:var(--muted-blue);box-shadow:0 2px 8px rgba(141,158,175,0.25)}
 </style>
 </head>
 <body>
@@ -625,18 +659,11 @@ body{
 
 <!-- ===== 分享广场 ===== -->
 <div class="page active" id="page-feed">
+  <!-- 活动倒计时横幅 -->
+  <div id="countdownBanner" style="display:none"></div>
+
   <!-- 公告区 -->
   <div id="feedAnnounce"></div>
-
-  <!-- 搜索栏 -->
-  <div class="search-bar">
-    <input type="text" id="searchInput" placeholder="搜索发帖人或内容..." oninput="onSearch()">
-    <span class="clear-btn" id="clearSearch" onclick="clearSearch()" style="display:none">&#10005;</span>
-  </div>
-
-  <!-- 标签分类筛选 -->
-  <div class="tag-category-tabs" id="tagCategoryTabs"></div>
-  <div class="tags-row" id="tagFilters"></div>
 
   <!-- 全部帖子 -->
   <div class="section-title" style="margin-top:14px">&#128220; 全部帖子</div>
@@ -746,6 +773,7 @@ body{
       <div class="avatar-v2">&#128100;</div>
       <div class="name" id="myName">未登录</div>
       <div class="dept" id="myDept">-</div>
+      <div id="myRankBadge"></div>
       <div class="profile-stats-v2">
         <div class="stat-v2">
           <div class="stat-num" id="myPostCount">0</div>
@@ -839,6 +867,27 @@ body{
     </div>
 
     <div class="admin-section">
+      <h3>积分头衔设置</h3>
+      <div class="hint">编辑每个等级的头衔名称和积分门槛</div>
+      <div id="rankEditor"></div>
+      <button onclick="saveRankSettings()" style="margin-top:10px">保存头衔设置</button>
+    </div>
+
+    <div class="admin-section">
+      <h3>活动倒计时</h3>
+      <div class="hint">配置首页顶部显示的活动倒计时横幅</div>
+      <input type="text" id="eventTitle" placeholder="活动标题（如：6月生日会）" style="margin-bottom:8px">
+      <input type="datetime-local" id="eventDate" style="margin-bottom:8px">
+      <input type="text" id="eventAction" placeholder="按钮文字（如：去送祝福）" style="margin-bottom:8px">
+      <input type="text" id="eventTag" placeholder="关联标签（如：生日祝福）" style="margin-bottom:8px">
+      <div style="display:flex;gap:8px">
+        <button onclick="saveEvent()">保存活动</button>
+        <button class="danger small" onclick="clearEvent()">清除活动</button>
+      </div>
+      <div id="currentEvent" style="margin-top:8px;font-size:13px;color:var(--text2)"></div>
+    </div>
+
+    <div class="admin-section">
       <h3>公告管理</h3>
       <div class="hint">公告将显示在分享广场顶部</div>
       <textarea id="announceInput" placeholder="输入公告内容..." style="height:60px"></textarea>
@@ -920,6 +969,12 @@ body{
       <div class="post-modal-charcount"><span id="charCount">0</span>/1500</div>
       <!-- @mention下拉 -->
       <div class="mention-dropdown" id="postMentionDropdown" style="position:relative;left:0;right:0;bottom:auto;margin-top:4px"></div>
+
+      <!-- 话题模板 -->
+      <div class="topic-templates" id="topicTemplates">
+        <div class="topic-label">&#128161; 推荐话题（点击快速填充）</div>
+        <div class="topic-list" id="topicList"></div>
+      </div>
 
       <!-- 标签选择 -->
       <div class="post-tag-section" id="postTagSection"></div>
@@ -1041,12 +1096,17 @@ let featuredSort = 'newest';
 
 // ===== 初始化 =====
 async function init() {
+  await loadRankSettings(); // 先加载头衔设置
   await loadTagCategories();
   await loadSettings();
   await loadMembers();
   await loadSiteTitle();
   await loadPlaceholders();
   await loadNotices();
+  await loadEvent();
+  startCountdownTimer();
+  renderTopicTemplates();
+  requestNotificationPermission(); // 请求通知权限
   loadFeed();
   setInterval(loadNotices, 30000);
 }
@@ -1069,6 +1129,288 @@ document.addEventListener('click', (e) => {
     console.error('Lightbox open failed:', err);
   }
 });
+
+// ==================== 积分头衔系统 ====================
+let RANK_LEVELS = [
+  { min: 0, title: '🌱 新人报到', class: 'l1' },
+  { min: 5, title: '🌿 积极参与', class: 'l2' },
+  { min: 15, title: '🌳 社区骨干', class: 'l3' },
+  { min: 30, title: '🏆 分享达人', class: 'l4' },
+  { min: 50, title: '👑 年度卷王', class: 'l5' }
+];
+
+async function loadRankSettings() {
+  const { data } = await db.from("settings").select("value").eq("key","rank_levels").limit(1);
+  if (data && data[0]?.value) {
+    try {
+      const parsed = JSON.parse(data[0].value);
+      if (Array.isArray(parsed) && parsed.length > 0) RANK_LEVELS = parsed;
+    } catch(e) {}
+  }
+}
+
+function renderRankEditor() {
+  const el = document.getElementById("rankEditor");
+  if (!el) return;
+  el.innerHTML = RANK_LEVELS.map((r, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;padding:8px;background:#F5F2EF;border-radius:8px">
+      <span style="font-size:14px;width:24px;text-align:center;font-weight:700;color:var(--text3)">L${i+1}</span>
+      <input type="text" value="${r.title}" id="rank-title-${i}" style="flex:1;margin-bottom:0;font-size:13px" placeholder="头衔名称">
+      <input type="number" value="${r.min}" id="rank-min-${i}" style="width:70px;margin-bottom:0;font-size:13px" placeholder="积分">
+      <span style="font-size:11px;color:var(--text3)">分</span>
+    </div>
+  `).join("");
+}
+
+async function saveRankSettings() {
+  const newLevels = [];
+  for (let i = 0; i < 5; i++) {
+    const title = document.getElementById(`rank-title-${i}`).value.trim();
+    const min = parseInt(document.getElementById(`rank-min-${i}`).value);
+    if (!title || isNaN(min)) { toast(`L${i+1} 信息不完整`); return; }
+    newLevels.push({ min, title, class: `l${i+1}` });
+  }
+  newLevels.sort((a, b) => a.min - b.min);
+  RANK_LEVELS = newLevels;
+  await db.from("settings").upsert({ key: "rank_levels", value: JSON.stringify(RANK_LEVELS) });
+  toast("头衔设置已保存");
+}
+
+function getRankInfo(points) {
+  for (let i = RANK_LEVELS.length - 1; i >= 0; i--) {
+    if (points >= RANK_LEVELS[i].min) return RANK_LEVELS[i];
+  }
+  return RANK_LEVELS[0];
+}
+
+async function loadMyPoints() {
+  if (!userName) return 0;
+  const { data } = await db.from("points").select("points").eq("member_name", userName).limit(1);
+  return data?.[0]?.points || 0;
+}
+
+async function renderMyRank() {
+  const points = await loadMyPoints();
+  const rank = getRankInfo(points);
+  const badge = document.getElementById("myRankBadge");
+  if (badge) {
+    badge.innerHTML = `<span class="rank-badge ${rank.class}">${rank.title} · ${points}分</span>`;
+  }
+}
+
+// 飘字动画
+function showPointFloat(text, x, y) {
+  const el = document.createElement('div');
+  el.className = 'point-float';
+  el.textContent = text;
+  el.style.left = x + 'px';
+  el.style.top = y + 'px';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1200);
+}
+
+// ==================== Notification API ====================
+let notifEnabled = false;
+
+async function requestNotificationPermission() {
+  if (!('Notification' in window)) return false;
+  if (Notification.permission === 'granted') { notifEnabled = true; return true; }
+  if (Notification.permission === 'denied') return false;
+  const perm = await Notification.requestPermission();
+  notifEnabled = perm === 'granted';
+  return notifEnabled;
+}
+
+function sendBrowserNotification(title, body, tag = 'sharewall') {
+  if (!notifEnabled || !('Notification' in window)) return;
+  if (document.visibilityState === 'visible') return; // 页面可见时不弹
+  try {
+    new Notification(title, {
+      body,
+      icon: '',
+      tag,
+      renotify: true
+    });
+  } catch(e) { console.error('Notification error:', e); }
+}
+
+// ==================== 话题模板 ====================
+const DEFAULT_TOPICS = [
+  { text: '🎉 本周工作中的小成就', content: '这周我在工作中完成了一个小突破：\n\n（具体描述你的成就）\n\n虽然不大，但挺有成就感的！' },
+  { text: '💡 发现了一个好用的工具/技巧', content: '最近发现了一个很实用的工具/技巧：\n\n（工具名称和用法）\n\n用了之后效率提升不少，分享给大家！' },
+  { text: '👏 想夸夸团队里的某个人', content: '今天特别想夸夸我们团队的@姓名：\n\n（具体的事情）\n\n有你这样的队友真的太棒了！' },
+  { text: '❓ 遇到了一个难题，求支招', content: '最近在工作中遇到了一个难题：\n\n（问题描述）\n\n有没有小伙伴有经验，求支招！' },
+  { text: '🎂 生日祝福', content: '祝@寿星 生日快乐！🎂🎉\n\n（你的祝福）\n\n新的一岁，万事顺遂！' }
+];
+
+function renderTopicTemplates() {
+  const list = document.getElementById('topicList');
+  if (!list) return;
+  list.innerHTML = DEFAULT_TOPICS.map((t, i) =>
+    `<span class="topic-chip" data-idx="${i}" onclick="selectTopic(${i})">${t.text}</span>`
+  ).join('');
+}
+
+function selectTopic(idx) {
+  const topic = DEFAULT_TOPICS[idx];
+  if (!topic) return;
+  document.getElementById('postContent').value = topic.content;
+  updateCharCount();
+  // 高亮选中的话题
+  document.querySelectorAll('.topic-chip').forEach((chip, i) => {
+    chip.classList.toggle('selected', i === idx);
+  });
+}
+
+// ==================== 活动倒计时 ====================
+let currentEventData = null;
+let countdownTimer = null;
+
+async function loadEvent() {
+  const { data } = await db.from("settings").select("value").eq("key","event_countdown").limit(1);
+  if (data && data[0]?.value) {
+    try {
+      currentEventData = JSON.parse(data[0].value);
+      renderCountdown();
+    } catch(e) { currentEventData = null; }
+  } else {
+    currentEventData = null;
+    const banner = document.getElementById('countdownBanner');
+    if (banner) banner.style.display = 'none';
+  }
+}
+
+function renderCountdown() {
+  if (!currentEventData) return;
+  const banner = document.getElementById('countdownBanner');
+  if (!banner) return;
+
+  const eventDate = new Date(currentEventData.date);
+  const now = new Date();
+  const diff = eventDate - now;
+
+  if (diff <= 0) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  banner.style.display = '';
+
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+  const pad = n => n.toString().padStart(2, '0');
+
+  banner.innerHTML = `
+    <div class="countdown-label">&#9200; 距离${esc(currentEventData.title)}</div>
+    <div class="countdown-time">
+      <div class="countdown-unit"><div class="cd-num" id="cd-days">${days}</div><div class="cd-label">天</div></div>
+      <div class="countdown-sep">:</div>
+      <div class="countdown-unit"><div class="cd-num" id="cd-hours">${pad(hours)}</div><div class="cd-label">时</div></div>
+      <div class="countdown-sep">:</div>
+      <div class="countdown-unit"><div class="cd-num" id="cd-minutes">${pad(minutes)}</div><div class="cd-label">分</div></div>
+      <div class="countdown-sep">:</div>
+      <div class="countdown-unit"><div class="cd-num" id="cd-seconds">${pad(seconds)}</div><div class="cd-label">秒</div></div>
+    </div>
+  `;
+}
+
+// 秒级更新，带翻页动画
+let prevSeconds = -1;
+function tickCountdown() {
+  if (!currentEventData) return;
+  const eventDate = new Date(currentEventData.date);
+  const now = new Date();
+  const diff = eventDate - now;
+
+  if (diff <= 0) {
+    document.getElementById('countdownBanner').style.display = 'none';
+    return;
+  }
+
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+  const pad = n => n.toString().padStart(2, '0');
+
+  const dEl = document.getElementById('cd-days');
+  const hEl = document.getElementById('cd-hours');
+  const mEl = document.getElementById('cd-minutes');
+  const sEl = document.getElementById('cd-seconds');
+
+  if (dEl && dEl.textContent != days) { dEl.textContent = days; dEl.classList.add('cd-flip'); setTimeout(()=>dEl.classList.remove('cd-flip'), 300); }
+  if (hEl && hEl.textContent != pad(hours)) { hEl.textContent = pad(hours); hEl.classList.add('cd-flip'); setTimeout(()=>hEl.classList.remove('cd-flip'), 300); }
+  if (mEl && mEl.textContent != pad(minutes)) { mEl.textContent = pad(minutes); mEl.classList.add('cd-flip'); setTimeout(()=>mEl.classList.remove('cd-flip'), 300); }
+  if (sEl && prevSeconds !== seconds) {
+    sEl.textContent = pad(seconds);
+    sEl.classList.add('cd-flip');
+    setTimeout(() => sEl.classList.remove('cd-flip'), 300);
+    prevSeconds = seconds;
+  }
+}
+
+function startCountdownTimer() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  renderCountdown(); // 先渲染一次
+  countdownTimer = setInterval(() => {
+    if (currentEventData) tickCountdown();
+  }, 1000); // 每秒更新
+}
+
+async function saveEvent() {
+  const title = document.getElementById('eventTitle').value.trim();
+  const date = document.getElementById('eventDate').value;
+  const action = document.getElementById('eventAction').value.trim();
+  const tag = document.getElementById('eventTag').value.trim();
+  if (!title || !date) return toast('请输入活动标题和日期');
+
+  const eventData = { title, date, action: action || '参与', tag };
+  await db.from("settings").upsert({ key: "event_countdown", value: JSON.stringify(eventData) });
+  currentEventData = eventData;
+  renderCountdown();
+  startCountdownTimer();
+  toast('活动已保存');
+  document.getElementById('currentEvent').textContent = `当前：${title} · ${new Date(date).toLocaleString()}`;
+}
+
+async function clearEvent() {
+  await db.from("settings").delete().eq("key", "event_countdown");
+  currentEventData = null;
+  if (countdownTimer) clearInterval(countdownTimer);
+  document.getElementById('countdownBanner').style.display = 'none';
+  document.getElementById('currentEvent').textContent = '暂无活动';
+  toast('活动已清除');
+}
+
+async function loadCurrentEvent() {
+  const { data } = await db.from("settings").select("value").eq("key","event_countdown").limit(1);
+  const el = document.getElementById('currentEvent');
+  if (data && data[0]?.value) {
+    try {
+      const ev = JSON.parse(data[0].value);
+      el.textContent = `当前：${ev.title} · ${new Date(ev.date).toLocaleString()}`;
+    } catch(e) { el.textContent = '暂无活动'; }
+  } else {
+    el.textContent = '暂无活动';
+  }
+}
+
+// ==================== 积分自动写入 ====================
+async function addUserPoints(memberName, delta, note) {
+  if (!memberName || delta === 0) return;
+  try {
+    const { data: existing } = await db.from("points").select("id,points").eq("member_name", memberName).limit(1);
+    if (existing && existing.length > 0) {
+      const newPoints = (existing[0].points || 0) + delta;
+      await db.from("points").update({ points: newPoints }).eq("id", existing[0].id);
+    } else {
+      await db.from("points").insert({ member_name: memberName, points: delta, note: note || '' });
+    }
+  } catch (e) { console.error("addUserPoints error:", e); }
+}
 
 // 滚动加载更多
 window.addEventListener('scroll', () => {
@@ -1578,6 +1920,14 @@ async function submitPost() {
     // 重置分页，后台静默刷新保证一致性
     feedPage = 0; feedHasMore = true;
   }
+  // 飘字动画
+  const fab = document.getElementById('fabPost');
+  const rect = fab?.getBoundingClientRect();
+  if (rect) showPointFloat('+3 发帖', rect.left + rect.width/2, rect.top);
+  // 自动写入积分
+  await addUserPoints(userName, 3, '发布帖子');
+  // 刷新头衔
+  renderMyRank();
   toast("发布成功");
 }
 
@@ -2166,6 +2516,19 @@ async function submitDrawerComment() {
   document.getElementById("commentImgBtn").classList.remove("has-img");
   cancelReply();
   document.getElementById("commentImage").value = "";
+  // 飘字动画
+  const sendBtn = document.querySelector('.comment-input-row .send-btn');
+  const rect = sendBtn?.getBoundingClientRect();
+  if (rect) showPointFloat('+1 评论', rect.left, rect.top);
+  // 积分：评论别人的帖子，评论者+1，被评论的人+1，自评不加分
+  if (post && post.author_name !== userName) {
+    await addUserPoints(userName, 1, '评论帖子');
+    await addUserPoints(post.author_name, 1, '帖子被评论');
+    await db.from("notices").insert({
+      to_user: post.author_name, type: "comment", message: `${userName} 评论了你的帖子`, share_id: currentDrawerShareId
+    });
+    sendBrowserNotification('分享墙', `${userName} 评论了你的帖子`, `comment-${currentDrawerShareId}`);
+  }
   // 刷新评论抽屉
   openComments(currentDrawerShareId);
   // DOM即时更新feed中该帖子的评论数
@@ -2223,11 +2586,23 @@ async function toggleLike(shareId) {
   // 后台静默同步数据库
   if (isLiking) {
     await db.from("likes").insert({ share_id: shareId, author_name: userName });
+    // 飘字动画
+    const rect = btn?.getBoundingClientRect();
+    if (rect) showPointFloat('+1 点赞', rect.left + rect.width/2, rect.top);
+    // 积分：点赞别人+1，被点赞的人+1，自赞不加分
     const { data: post } = await db.from("shares").select("author_name").eq("id", shareId).single();
-    if (post && post.author_name !== userName) {
-      await db.from("notices").insert({
-        to_user: post.author_name, type: "like", message: `${userName} 赞了你的帖子`, share_id: shareId
-      });
+    if (post) {
+      if (post.author_name !== userName) {
+        // 我点赞了别人的帖子，我+1
+        await addUserPoints(userName, 1, '点赞帖子');
+        // 别人被点赞了，对方+1
+        await addUserPoints(post.author_name, 1, '帖子被点赞');
+        await db.from("notices").insert({
+          to_user: post.author_name, type: "like", message: `${userName} 赞了你的帖子`, share_id: shareId
+        });
+        sendBrowserNotification('分享墙', `${userName} 赞了你的帖子`, `like-${shareId}`);
+      }
+      // 自赞不加分
     }
   } else {
     await db.from("likes").delete().eq("id", existing[0].id);
@@ -2906,6 +3281,7 @@ async function loadMyData() {
   document.getElementById("myCommentCount").textContent = receivedCommentsCount;
 
   window.myData = { shares: shares || [], likes: myLikes || [], comments: myComments || [] };
+  renderMyRank(); // 显示头衔
   renderMyTab();
 }
 
@@ -3193,8 +3569,9 @@ async function adminLogin() {
     document.getElementById("adminLogin").style.display = "none";
     document.getElementById("adminPanel").style.display = "block";
     await loadSettings();
+    await loadRankSettings();
     loadMembers(); loadAllPosts(); loadAnnounce(); loadSiteTitle(); loadPlaceholders();
-    renderTagCategoryAdmin(); loadPoints();
+    renderTagCategoryAdmin(); loadPoints(); loadCurrentEvent(); renderRankEditor();
     loadFeed();
   } else { toast("密码错误"); }
 }
