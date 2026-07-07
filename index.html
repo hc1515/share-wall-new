@@ -867,6 +867,16 @@ body{
     </div>
 
     <div class="admin-section">
+      <h3>积分黑名单</h3>
+      <div class="hint">以下成员不进入积分排行榜，互动也不产生积分</div>
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <input type="text" id="blacklistName" placeholder="成员姓名" style="flex:1;margin-bottom:0">
+        <button class="danger" onclick="addToBlacklist()">+ 加入黑名单</button>
+      </div>
+      <div id="blacklistDisplay" style="font-size:13px"></div>
+    </div>
+
+    <div class="admin-section">
       <h3>积分头衔设置</h3>
       <div class="hint">编辑每个等级的头衔名称和积分门槛</div>
       <div id="rankEditor"></div>
@@ -912,7 +922,10 @@ body{
         <input type="number" id="pointValue" placeholder="积分" style="width:80px;margin-bottom:0">
         <input type="text" id="pointNote" placeholder="备注（如：优质评论）" style="flex:1;min-width:120px;margin-bottom:0">
       </div>
-      <button onclick="addPoint()">添加/更新积分</button>
+      <button onclick="addPoint(false)">加分</button>
+      <button class="danger" onclick="addPoint(true)">减分</button>
+      <button onclick="exportPointLogs()" style="background:var(--warm-gray)">导出积分明细</button>
+      <button onclick="backfillPoints()" style="background:var(--sage)">补回历史积分</button>
       <div id="pointsList" style="margin-top:12px;font-size:13px"></div>
     </div>
 
@@ -1138,6 +1151,40 @@ let RANK_LEVELS = [
   { min: 30, title: '🏆 分享达人', class: 'l4' },
   { min: 50, title: '👑 年度卷王', class: 'l5' }
 ];
+
+async function loadBlacklistDisplay() {
+  await loadPointsBlacklist();
+  const el = document.getElementById("blacklistDisplay");
+  if (!el) return;
+  if (pointsBlacklist.length === 0) {
+    el.innerHTML = '<span style="color:var(--text3)">暂无黑名单成员</span>';
+    return;
+  }
+  el.innerHTML = pointsBlacklist.map(name => `
+    <span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(231,76,60,0.08);color:var(--dusty-rose);border-radius:12px;margin:0 4px 4px 0;font-size:13px">
+      ${esc(name)} <button onclick="removeFromBlacklist('${esc(name)}')" style="background:none;border:none;color:var(--dusty-rose);cursor:pointer;font-size:14px;padding:0">&times;</button>
+    </span>
+  `).join("");
+}
+
+async function addToBlacklist() {
+  const name = document.getElementById("blacklistName").value.trim();
+  if (!name) return toast("请输入成员姓名");
+  if (pointsBlacklist.includes(name)) return toast("该成员已在黑名单中");
+  pointsBlacklist.push(name);
+  await db.from("settings").upsert({ key: "points_blacklist", value: JSON.stringify(pointsBlacklist) });
+  document.getElementById("blacklistName").value = "";
+  loadBlacklistDisplay();
+  toast(`${name} 已加入黑名单`);
+}
+
+async function removeFromBlacklist(name) {
+  if (!confirm(`将 ${name} 移出黑名单？`)) return;
+  pointsBlacklist = pointsBlacklist.filter(n => n !== name);
+  await db.from("settings").upsert({ key: "points_blacklist", value: JSON.stringify(pointsBlacklist) });
+  loadBlacklistDisplay();
+  toast(`${name} 已移出黑名单`);
+}
 
 async function loadRankSettings() {
   const { data } = await db.from("settings").select("value").eq("key","rank_levels").limit(1);
@@ -1398,17 +1445,39 @@ async function loadCurrentEvent() {
   }
 }
 
+// ==================== 积分黑名单 ====================
+let pointsBlacklist = [];
+
+async function loadPointsBlacklist() {
+  const { data } = await db.from("settings").select("value").eq("key","points_blacklist").limit(1);
+  if (data && data[0]?.value) {
+    try { pointsBlacklist = JSON.parse(data[0].value); } catch(e) { pointsBlacklist = []; }
+  } else { pointsBlacklist = []; }
+}
+
+function isBlacklisted(name) {
+  return pointsBlacklist.includes(name);
+}
+
 // ==================== 积分自动写入 ====================
 async function addUserPoints(memberName, delta, note) {
   if (!memberName || delta === 0) return;
+  if (isBlacklisted(memberName)) return; // 黑名单不积分
   try {
     const { data: existing } = await db.from("points").select("id,points").eq("member_name", memberName).limit(1);
+    let newPoints;
     if (existing && existing.length > 0) {
-      const newPoints = (existing[0].points || 0) + delta;
+      newPoints = Math.max(0, (existing[0].points || 0) + delta);
       await db.from("points").update({ points: newPoints }).eq("id", existing[0].id);
     } else {
-      await db.from("points").insert({ member_name: memberName, points: delta, note: note || '' });
+      newPoints = Math.max(0, delta);
+      await db.from("points").insert({ member_name: memberName, points: newPoints });
     }
+    // 同时写入积分明细日志
+    await db.from("point_logs").insert({
+      member_name: memberName, delta, balance: newPoints,
+      reason: note || '系统自动', admin_name: 'system'
+    });
   } catch (e) { console.error("addUserPoints error:", e); }
 }
 
@@ -2545,6 +2614,19 @@ async function submitDrawerComment() {
 
 async function deleteComment(id) {
   if (!confirm("确认删除这条评论？")) return;
+
+  // 查询评论信息，用于积分回退
+  const { data: comment } = await db.from("comments").select("author_name,share_id,parent_id").eq("id", id).single();
+  if (comment) {
+    const { data: post } = await db.from("shares").select("author_name").eq("id", comment.share_id).single();
+    if (post && comment.author_name !== post.author_name) {
+      // 回退评论者积分
+      await addUserPoints(comment.author_name, -1, '评论被删除，回退评论积分');
+      // 回退帖子作者被评积分
+      await addUserPoints(post.author_name, -1, '评论被删除，回退被评积分');
+    }
+  }
+
   await db.from("comments").delete().eq("id", id);
   if (currentDrawerShareId) openComments(currentDrawerShareId);
   loadFeed();
@@ -2605,6 +2687,12 @@ async function toggleLike(shareId) {
       // 自赞不加分
     }
   } else {
+    // 取消点赞：回退积分
+    const { data: post } = await db.from("shares").select("author_name").eq("id", shareId).single();
+    if (post && post.author_name !== userName) {
+      await addUserPoints(userName, -1, '取消点赞，回退点赞积分');
+      await addUserPoints(post.author_name, -1, '被取消赞，回退被赞积分');
+    }
     await db.from("likes").delete().eq("id", existing[0].id);
   }
 }
@@ -2666,6 +2754,32 @@ async function deletePost(id) {
   // DOM即时移除，最快速的视觉反馈
   const card = document.getElementById(`card-${id}`);
   if (card) { card.style.transition="all .35s cubic-bezier(.4,0,.2,1)"; card.style.transform="translateX(110%)"; card.style.opacity="0"; setTimeout(()=>{card.style.maxHeight="0";card.style.margin="0 16px";card.style.padding="0";card.style.overflow="hidden";setTimeout(()=>card.remove(),300)}, 350); }
+
+  // 积分回退：帖子作者 -3（发帖分）
+  await addUserPoints(post.author_name, -3, '帖子被删除，回退发帖积分');
+
+  // 同时该帖子获得的所有点赞和评论积分也需要回退
+  // 回退所有点赞积分
+  const { data: likes } = await db.from("likes").select("author_name").eq("share_id", id);
+  if (likes) {
+    for (const l of likes) {
+      if (l.author_name !== post.author_name) {
+        await addUserPoints(l.author_name, -1, '帖子被删除，回退点赞积分');
+        await addUserPoints(post.author_name, -1, '帖子被删除，回退被赞积分');
+      }
+    }
+  }
+  // 回退所有评论积分
+  const { data: comments } = await db.from("comments").select("author_name").eq("share_id", id);
+  if (comments) {
+    for (const c of comments) {
+      if (c.author_name !== post.author_name) {
+        await addUserPoints(c.author_name, -1, '帖子被删除，回退评论积分');
+        await addUserPoints(post.author_name, -1, '帖子被删除，回退被评积分');
+      }
+    }
+  }
+
   await db.from("likes").delete().eq("share_id", id);
   await db.from("comments").delete().eq("share_id", id);
   await db.from("shares").delete().eq("id", id);
@@ -2872,22 +2986,29 @@ async function loadDashboard() {
 }
 
 async function loadPointsLeaderboard() {
+  await loadPointsBlacklist(); // 确保黑名单最新
   const { data } = await db.from("points").select("*").order("points", { ascending: false });
   const el = document.getElementById("pointsLeaderboard");
   if (!data || data.length === 0) {
     el.innerHTML = '<div class="empty">暂无积分数据</div>';
     return;
   }
-  el.innerHTML = data.map((p, i) => {
+  // 过滤黑名单成员
+  const filtered = data.filter(p => !isBlacklisted(p.member_name));
+  if (filtered.length === 0) {
+    el.innerHTML = '<div class="empty">暂无积分数据</div>';
+    return;
+  }
+  el.innerHTML = filtered.map((p, i) => {
     let cls = "normal";
     if (i === 0) cls = "top1";
     else if (i === 1) cls = "top2";
     else if (i === 2) cls = "top3";
+    const rank = getRankInfo(p.points);
     return `<div class="lb-item">
       <div class="lb-rank ${cls}">${i + 1}</div>
       <div class="lb-info">
-        <div class="lb-name">${esc(p.member_name)}</div>
-        <div class="lb-dept">${esc(p.note || '')}</div>
+        <div class="lb-name">${esc(p.member_name)} <span class="rank-badge ${rank.class}" style="font-size:10px;padding:2px 8px;margin-left:4px">${rank.title}</span></div>
       </div>
       <div class="lb-stats"><span>&#127941; ${p.points} 分</span></div>
     </div>`;
@@ -2910,28 +3031,36 @@ async function loadPoints() {
   `).join("");
 }
 
-async function addPoint() {
+async function addPoint(isDeduction = false) {
   const name = document.getElementById("pointMemberName").value.trim();
-  const val = parseInt(document.getElementById("pointValue").value);
+  let val = parseInt(document.getElementById("pointValue").value);
   const note = document.getElementById("pointNote").value.trim();
   if (!name) return toast("请输入成员姓名");
-  if (isNaN(val)) return toast("请输入积分");
+  if (isNaN(val) || val === 0) return toast("请输入积分");
+  if (isDeduction) val = -Math.abs(val); // 减分模式：强制负数
 
   try {
-    // 如果该成员已有记录则累加积分，否则新增
-    const { data: existing, error: findErr } = await db.from("points").select("id,points,note").eq("member_name", name).limit(1);
-    if (findErr) { console.error("查询积分失败:", findErr); toast("查询失败，请检查网络"); return; }
+    const { data: existing, error: findErr } = await db.from("points").select("id,points").eq("member_name", name).limit(1);
+    if (findErr) { console.error("查询积分失败:", findErr); toast("查询失败"); return; }
 
+    let newPoints;
     if (existing && existing.length > 0) {
-      const newPoints = (existing[0].points || 0) + val;
-      const { error: updErr } = await db.from("points").update({ points: newPoints, note: note || existing[0].note || '' }).eq("id", existing[0].id);
-      if (updErr) { console.error("更新积分失败:", updErr); toast("更新失败: " + updErr.message); return; }
-      toast(`${name} 积分已更新为 ${newPoints} 分`);
+      newPoints = Math.max(0, (existing[0].points || 0) + val); // 不允许负分
+      await db.from("points").update({ points: newPoints }).eq("id", existing[0].id);
     } else {
-      const { error: insErr } = await db.from("points").insert({ member_name: name, points: val, note: note || '' });
-      if (insErr) { console.error("添加积分失败:", insErr); toast("添加失败: " + insErr.message); return; }
-      toast(`${name} 已添加 ${val} 分`);
+      newPoints = Math.max(0, val);
+      await db.from("points").insert({ member_name: name, points: newPoints });
     }
+
+    // 写入积分明细日志
+    await db.from("point_logs").insert({
+      member_name: name, delta: val, balance: newPoints,
+      reason: note || (val > 0 ? '管理员加分' : '管理员减分'),
+      admin_name: userName || '管理员'
+    });
+
+    const actionText = val > 0 ? `+${val}` : `${val}`;
+    toast(`${name} ${actionText}分，当前 ${newPoints} 分`);
 
     document.getElementById("pointMemberName").value = "";
     document.getElementById("pointValue").value = "";
@@ -2942,6 +3071,92 @@ async function addPoint() {
     console.error("addPoint异常:", e);
     toast("操作异常: " + e.message);
   }
+}
+
+// ==================== 历史数据补积分 ====================
+async function backfillPoints() {
+  if (!confirm("这将遍历所有历史点赞和评论记录，为相关人员补积分。\n\n规则：\n- 发帖：作者 +3\n- 点赞：点赞者 +1，帖子作者 +1（自赞不加分）\n- 评论：评论者 +1，帖子作者 +1（自评不加分）\n\n确认执行？")) return;
+
+  toast("正在补积分，请稍候...");
+  let count = 0;
+
+  try {
+    // 1. 补发帖积分：每个作者 +3
+    const { data: shares } = await db.from("shares").select("id,author_name");
+    if (shares) {
+      for (const s of shares) {
+        await addUserPoints(s.author_name, 3, '历史发帖补积分');
+        count++;
+      }
+    }
+
+    // 2. 补点赞积分
+    const { data: likes } = await db.from("likes").select("id,share_id,author_name");
+    if (likes) {
+      const { data: allShares } = await db.from("shares").select("id,author_name");
+      const shareMap = {};
+      allShares?.forEach(s => shareMap[s.id] = s.author_name);
+
+      for (const l of likes) {
+        const postAuthor = shareMap[l.share_id];
+        if (!postAuthor) continue;
+        if (l.author_name !== postAuthor) {
+          // 点赞者+1
+          await addUserPoints(l.author_name, 1, '历史点赞补积分');
+          // 被赞者+1
+          await addUserPoints(postAuthor, 1, '历史被赞补积分');
+          count++;
+        }
+        // 自赞不加分
+      }
+    }
+
+    // 3. 补评论积分
+    const { data: comments } = await db.from("comments").select("id,share_id,author_name");
+    if (comments) {
+      const { data: allShares } = await db.from("shares").select("id,author_name");
+      const shareMap = {};
+      allShares?.forEach(s => shareMap[s.id] = s.author_name);
+
+      for (const c of comments) {
+        const postAuthor = shareMap[c.share_id];
+        if (!postAuthor) continue;
+        if (c.author_name !== postAuthor) {
+          // 评论者+1
+          await addUserPoints(c.author_name, 1, '历史评论补积分');
+          // 被评论者+1
+          await addUserPoints(postAuthor, 1, '历史被评补积分');
+          count++;
+        }
+        // 自评不加分
+      }
+    }
+
+    toast(`补积分完成，共处理 ${count} 条记录`);
+    await loadPoints();
+    await loadPointsLeaderboard();
+  } catch (e) {
+    console.error("补积分异常:", e);
+    toast("补积分异常: " + e.message);
+  }
+}
+
+// ==================== 积分明细导出 ====================
+async function exportPointLogs() {
+  const { data } = await db.from("point_logs").select("*").order("created_at", { ascending: false });
+  if (!data || data.length === 0) return toast("暂无积分明细记录");
+
+  const BOM = "\uFEFF";
+  const rows = data.map(l =>
+    `"${l.member_name}","${l.delta}","${l.balance}","${(l.reason||'').replace(/"/g,'""')}","${l.admin_name}","${l.created_at}"`
+  ).join("\n");
+
+  const blob = new Blob([BOM + "成员,变动,余额,原因,操作人,时间\n" + rows], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "积分明细_" + new Date().toISOString().slice(0, 10) + ".csv";
+  a.click();
+  toast("下载中...");
 }
 
 async function deletePoint(id) {
@@ -3571,7 +3786,7 @@ async function adminLogin() {
     await loadSettings();
     await loadRankSettings();
     loadMembers(); loadAllPosts(); loadAnnounce(); loadSiteTitle(); loadPlaceholders();
-    renderTagCategoryAdmin(); loadPoints(); loadCurrentEvent(); renderRankEditor();
+    renderTagCategoryAdmin(); loadPoints(); loadCurrentEvent(); renderRankEditor(); loadBlacklistDisplay();
     loadFeed();
   } else { toast("密码错误"); }
 }
